@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<resources>
+
+    <color name="brand_amber">#FFC940</color>
+    <color name="brand_amber_dark">#E8A317</color>
+    <color name="brand_navy">#12172B</color>
+    <color name="brand_navy_light">#1E2540</color>
+    <color name="brand_indigo">#3A4BC7</color>
+    <color name="brand_white">#FFFFFF</color>
+
+</resources>
