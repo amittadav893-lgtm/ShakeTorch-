@@ -10,328 +10,141 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import androidx.core.app.NotificationCompat
-import kotlin.math.sqrt
 
 class ShakeService : Service(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
-    private lateinit var accelerometer: Sensor
+    private var accelerometer: Sensor? = null
+    private var vibrator: Vibrator? = null
 
-    private lateinit var cameraManager: CameraManager
-    private var cameraId: String? = null
-
-    private var torchOn = false
-
-    private var lastShakeTime = 0L
-
-    private var sensitivity = 65
+    private var lastShakeTime: Long = 0
+    private var lastUpdate: Long = 0
+    private var lastX = 0f
+    private var lastY = 0f
+    private var lastZ = 0f
 
     companion object {
-
-        private const val CHANNEL_ID =
-            "shake_torch_service"
-
-        private const val NOTIFICATION_ID = 1001
-
-        private const val SHAKE_COOLDOWN = 900L
-
-        private const val PREFS_NAME = "shake_torch"
-        private const val KEY_SENSITIVITY = "sensitivity"
-        private const val DEFAULT_SENSITIVITY = 65
+        var isRunning = false
+        var sensitivity: Float = 50f // Default medium sensitivity
     }
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        
+        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vibratorManager.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
 
-        createNotificationChannel()
+        accelerometer?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
 
-        sensorManager =
-            getSystemService(
-                Context.SENSOR_SERVICE
-            ) as SensorManager
-
-        accelerometer =
-            sensorManager.getDefaultSensor(
-                Sensor.TYPE_ACCELEROMETER
-            )!!
-
-        cameraManager =
-            getSystemService(
-                Context.CAMERA_SERVICE
-            ) as CameraManager
-
-        cameraId = findFlashCamera()
+        startForegroundServiceWithNotification()
     }
 
-    override fun onStartCommand(
-        intent: Intent?,
-        flags: Int,
-        startId: Int
-    ): Int {
-
-        val prefs =
-            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        sensitivity =
-            if (intent?.hasExtra("sensitivity") == true) {
-                intent.getIntExtra(
-                    "sensitivity",
-                    DEFAULT_SENSITIVITY
-                )
-            } else {
-                prefs.getInt(
-                    KEY_SENSITIVITY,
-                    DEFAULT_SENSITIVITY
-                )
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Slider se aane wali sensitivity value ko yahan read kiya jata hai
+        intent?.let {
+            if (it.hasExtra("sensitivity")) {
+                val sentValue = it.getIntExtra("sensitivity", 50)
+                // Yahan value ko invert/scale karte hain taaki logic sahi bane:
+                // Slider jitna kam hoga, threshold utna hi bada hoga (zor se hilana padega)
+                sensitivity = (200 - sentValue).toFloat().coerceAtLeast(10f)
             }
-
-        startForeground(
-            NOTIFICATION_ID,
-            createNotification()
-        )
-
-        sensorManager.registerListener(
-            this,
-            accelerometer,
-            SensorManager.SENSOR_DELAY_GAME
-        )
-
+        }
         return START_STICKY
     }
 
-    private fun findFlashCamera(): String? {
+    private fun startForegroundServiceWithNotification() {
+        val channelId = "ShakeTorchChannel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "ShakeTorch Service",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
 
-        return try {
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+                .setContentTitle("ShakeTorch Active")
+                .setContentText("Shake sensitivity: ${sensitivity.toInt()}")
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+                .setContentTitle("ShakeTorch Active")
+                .setContentText("Shake sensitivity")
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .build()
+        }
 
-            for (id in cameraManager.cameraIdList) {
+        startForeground(1, notification)
+    }
 
-                val characteristics =
-                    cameraManager.getCameraCharacteristics(id)
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type == Sensor.TYPE_ACCELEROMETER) {
+            val currentTime = System.currentTimeMillis()
+            if ((currentTime - lastUpdate) > 70) {
+                val diffTime = currentTime - lastUpdate
+                lastUpdate = currentTime
 
-                val hasFlash =
-                    characteristics.get(
-                        CameraCharacteristics.FLASH_INFO_AVAILABLE
-                    ) == true
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
 
-                val facing =
-                    characteristics.get(
-                        CameraCharacteristics.LENS_FACING
-                    )
+                // Speed calculation for shake motion
+                val speed = Math.abs(x + y + z - lastX - lastY - lastZ) / diffTime * 10000
 
-                if (
-                    hasFlash &&
-                    facing ==
-                    CameraCharacteristics.LENS_FACING_BACK
-                ) {
-                    return id
+                // Agar speed hamari set ki gayi sensitivity threshold se zyada hai
+                if (speed > sensitivity) {
+                    if ((currentTime - lastShakeTime) > 1200) { // 1.2 second cooldown taaki bar bar trigger na ho
+                        lastShakeTime = currentTime
+                        triggerAction()
+                    }
                 }
+
+                lastX = x
+                lastY = y
+                lastZ = z
             }
-
-            null
-
-        } catch (e: Exception) {
-            null
         }
     }
 
-    override fun onSensorChanged(
-        event: SensorEvent?
-    ) {
-
-        if (event == null) return
-
-        val x = event.values[0]
-        val y = event.values[1]
-        val z = event.values[2]
-
-        val acceleration =
-            sqrt(
-                (x * x) +
-                (y * y) +
-                (z * z)
-            )
-
-        val gravity = 9.81f
-
-        val force =
-            kotlin.math.abs(
-                acceleration - gravity
-            )
-
-        /*
-         * Higher sensitivity number =
-         * easier to trigger (smaller shake needed).
-         *
-         * Lower sensitivity number =
-         * harder to trigger (bigger, more deliberate
-         * shake needed). This keeps normal handling,
-         * picking up, or unlocking the phone from
-         * accidentally triggering the torch.
-         */
-        val threshold =
-            32f - ((sensitivity - 20) * 0.225f)
-
-        val now =
-            System.currentTimeMillis()
-
-        if (
-            force > threshold &&
-            now - lastShakeTime > SHAKE_COOLDOWN
-        ) {
-
-            lastShakeTime = now
-
-            toggleTorch()
+    private fun triggerAction() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(150)
         }
+
+        val intent = Intent("TOGGLE_FLASHLIGHT")
+        sendBroadcast(intent)
     }
 
-    private fun toggleTorch() {
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-        val id = cameraId ?: return
-
-        try {
-
-            torchOn = !torchOn
-
-            cameraManager.setTorchMode(
-                id,
-                torchOn
-            )
-
-            vibrate()
-
-        } catch (e: Exception) {
-
-            torchOn = false
-        }
-    }
-
-    private fun vibrate() {
-
-        try {
-
-            if (Build.VERSION.SDK_INT >= 31) {
-
-                val vibratorManager =
-                    getSystemService(
-                        Context.VIBRATOR_MANAGER_SERVICE
-                    ) as VibratorManager
-
-                val vibrator =
-                    vibratorManager.defaultVibrator
-
-                vibrator.vibrate(
-                    VibrationEffect.createOneShot(
-                        80,
-                        VibrationEffect.DEFAULT_AMPLITUDE
-                    )
-                )
-
-            } else {
-
-                @Suppress("DEPRECATION")
-                val vibrator =
-                    getSystemService(
-                        Context.VIBRATOR_SERVICE
-                    ) as Vibrator
-
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(80)
-            }
-
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun createNotification(): Notification {
-
-        return NotificationCompat.Builder(
-            this,
-            CHANNEL_ID
-        )
-            .setContentTitle(
-                "Shake Torch is active"
-            )
-            .setContentText(
-                "Shake your phone to toggle the flashlight"
-            )
-            .setSmallIcon(
-                R.drawable.ic_notification
-            )
-            .setOngoing(true)
-            .setCategory(
-                NotificationCompat.CATEGORY_SERVICE
-            )
-            .setPriority(
-                NotificationCompat.PRIORITY_LOW
-            )
-            .build()
-    }
-
-    private fun createNotificationChannel() {
-
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
-
-            val channel =
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Shake Torch Service",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-
-            channel.description =
-                "Keeps shake detection active in the background"
-
-            val manager =
-                getSystemService(
-                    NotificationManager::class.java
-                )
-
-            manager.createNotificationChannel(
-                channel
-            )
-        }
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-
-        sensorManager.unregisterListener(this)
-
-        try {
-
-            cameraId?.let {
-                cameraManager.setTorchMode(
-                    it,
-                    false
-                )
-            }
-
-        } catch (_: Exception) {
-        }
-
-        torchOn = false
-
         super.onDestroy()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
-
-    override fun onAccuracyChanged(
-        sensor: Sensor?,
-        accuracy: Int
-    ) {
+        isRunning = false
+        sensorManager.unregisterListener(this)
     }
 }
