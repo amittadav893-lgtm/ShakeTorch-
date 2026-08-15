@@ -95,3 +95,74 @@ class MainActivity : ComponentActivity() {
                 "sensitivity",
                 sensitivity
             )
+
+            ContextCompat.startForegroundService(
+                this,
+                intent
+            )
+
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_ENABLED, true)
+                .putInt(KEY_SENSITIVITY, sensitivity)
+                .apply()
+
+            startButton.isEnabled = false
+            stopButton.isEnabled = true
+        }
+
+        stopButton.setOnClickListener {
+
+            val intent =
+                Intent(this, ShakeService::class.java)
+
+            stopService(intent)
+
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_ENABLED, false)
+                .apply()
+
+            startButton.isEnabled = true
+            stopButton.isEnabled = false
+        }
+    }
+
+    private fun updateSensitivityText(value: Int) {
+        sensitivityText.text =
+            "Shake sensitivity: $value"
+    }
+
+    private fun requestPermissionsIfNeeded() {
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.CAMERA),
+                CAMERA_PERMISSION
+            )
+        }
+
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(
+                    Manifest.permission.POST_NOTIFICATIONS
+                ),
+                NOTIFICATION_PERMISSION
+            )
+        }
+    }
+}
