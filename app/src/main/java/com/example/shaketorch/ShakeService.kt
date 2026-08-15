@@ -166,8 +166,18 @@ class ShakeService : Service(), SensorEventListener {
                 acceleration - gravity
             )
 
+        /*
+         * Higher sensitivity number =
+         * easier to trigger (smaller shake needed).
+         *
+         * Lower sensitivity number =
+         * harder to trigger (bigger, more deliberate
+         * shake needed). This keeps normal handling,
+         * picking up, or unlocking the phone from
+         * accidentally triggering the torch.
+         */
         val threshold =
-            18f - ((sensitivity - 20) * 0.10f)
+            32f - ((sensitivity - 20) * 0.225f)
 
         val now =
             System.currentTimeMillis()
